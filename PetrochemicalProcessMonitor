@@ -1,0 +1,136 @@
+import sqlite3
+import pandas as pd
+
+
+class PetrochemicalProcessMonitor:
+    """Class to manage, query, and analyze petrochemical process plant data."""
+
+    def __init__(self, db_name="refinery_operations.db"):
+        self.db_name = db_name
+        self._init_database()
+
+    def _get_connection(self):
+        """Creates and returns a database connection."""
+        return sqlite3.connect(self.db_name)
+
+    def _init_database(self):
+        """Creates operational tables and populates baseline sensor data."""
+        query = """
+        CREATE TABLE IF NOT EXISTS distillation_unit_logs (
+            log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            feed_rate_bpd REAL NOT NULL,
+            inlet_temp_c REAL NOT NULL,
+            outlet_temp_c REAL NOT NULL,
+            operating_pressure_psi REAL NOT NULL,
+            pressure_drop_psi REAL NOT NULL
+        );
+        """
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query)
+
+            # Insert initial test records if table is empty
+            cursor.execute("SELECT COUNT(*) FROM distillation_unit_logs")
+            if cursor.fetchone()[0] == 0:
+                sample_logs = [
+                    (
+                        "2026-10-07 08:00:00",
+                        12500.0,
+                        340.5,
+                        365.2,
+                        150.0,
+                        12.5,
+                    ),
+                    (
+                        "2026-10-07 10:00:00",
+                        12800.0,
+                        355.0,
+                        382.1,
+                        155.2,
+                        18.4,
+                    ),  # High Temp & Pressure Drop
+                    (
+                        "2026-10-07 12:00:00",
+                        12100.0,
+                        342.1,
+                        366.8,
+                        149.8,
+                        11.8,
+                    ),
+                    (
+                        "2026-10-07 14:00:00",
+                        13000.0,
+                        358.5,
+                        385.0,
+                        158.0,
+                        21.1,
+                    ),  # Anomaly: Fouling risk
+                    (
+                        "2026-10-07 16:00:00",
+                        11900.0,
+                        338.0,
+                        362.0,
+                        148.5,
+                        10.2,
+                    ),
+                ]
+                cursor.executemany(
+                    """
+                    INSERT INTO distillation_unit_logs 
+                    (timestamp, feed_rate_bpd, inlet_temp_c, outlet_temp_c, operating_pressure_psi, pressure_drop_psi)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                    sample_logs,
+                )
+                conn.commit()
+
+    def fetch_anomalies_sql(self, temp_threshold=350.0, dp_threshold=15.0):
+        """Filters operational anomalies via SQL query directly into a Pandas DataFrame."""
+        sql_query = f"""
+            SELECT 
+                log_id,
+                timestamp,
+                feed_rate_bpd,
+                outlet_temp_c,
+                pressure_drop_psi
+            FROM distillation_unit_logs
+            WHERE outlet_temp_c > {temp_threshold} 
+               OR pressure_drop_psi > {dp_threshold}
+            ORDER BY timestamp DESC;
+        """
+        with self._get_connection() as conn:
+            df_anomalies = pd.read_sql_query(sql_query, conn)
+
+        return df_anomalies
+
+    def process_data_analytics(self, df):
+        """Calculates secondary engineering metrics using Pandas."""
+        if df.empty:
+            return df
+
+        # Add flags for diagnostic evaluation
+        df["High_Temp_Alert"] = df["outlet_temp_c"] > 350.0
+        df["Fouling_Risk_Alert"] = df["pressure_drop_psi"] > 15.0
+
+        return df
+
+
+# --- Execution Block ---
+if __name__ == "__main__":
+    # Initialize monitor
+    monitor = PetrochemicalProcessMonitor()
+
+    # Extract anomalies from database
+    anomalies_df = monitor.fetch_anomalies_sql(
+        temp_threshold=350.0, dp_threshold=15.0
+    )
+
+    # Process metrics with Pandas
+    processed_df = monitor.process_data_analytics(anomalies_df)
+
+    # Output Results
+    print("==========================================================")
+    print("      PETROCHEMICAL UNIT OPERATIONAL ANOMALY REPORT       ")
+    print("==========================================================")
+    print(processed_df.to_string(index=False))
